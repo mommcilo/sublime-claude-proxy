@@ -165,6 +165,7 @@ class ClaudeSession:
         self.phantom_set = None
         self.spinner_frame = 0
         self.current_activity = ""
+        self.response_timestamp_written = False
 
     def send(self, prompt):
         if self.busy:
@@ -174,10 +175,15 @@ class ClaudeSession:
             return
         if not prompt.strip():
             return
+        self.view.run_command(
+            "claude_proxy_insert_above_last_prompt",
+            {"text": "[" + self._timestamp() + "]\n"},
+        )
         self.busy = True
         self.start_time = time.monotonic()
         self.spinner_frame = 0
         self.current_activity = ""
+        self.response_timestamp_written = False
         sublime.set_timeout(self._indicator_tick, 0)
         args = list(self.cmd) + [
             "--print",
@@ -256,6 +262,18 @@ class ClaudeSession:
             lambda t=text: append_to_view(self.view, t), 0
         )
 
+    def _emit_response_timestamp(self):
+        if self.response_timestamp_written:
+            return
+        self.response_timestamp_written = True
+        ts_line = "\n[" + self._timestamp() + "]\n"
+        sublime.set_timeout(
+            lambda t=ts_line: append_to_view(self.view, t), 0
+        )
+
+    def _timestamp(self):
+        return time.strftime("%Y-%m-%d %H:%M:%S")
+
     def _handle_event(self, event):
         etype = event.get("type")
         if etype == "assistant":
@@ -280,6 +298,7 @@ class ClaudeSession:
         if etype == "user":
             return
         if etype == "result":
+            self._emit_response_timestamp()
             return
         return
 
@@ -315,23 +334,16 @@ class ClaudeSession:
         return full
 
     def _finalize_turn(self, extra=""):
-        elapsed_label = self._format_elapsed()
         self._clear_indicator()
+        if not self.response_timestamp_written:
+            self.response_timestamp_written = True
+            append_to_view(
+                self.view, "\n[" + self._timestamp() + "]\n"
+            )
         if extra:
             append_to_view(self.view, extra)
-        append_to_view(
-            self.view, "\n\n[took {}]".format(elapsed_label)
-        )
         append_to_view(self.view, DIVIDER + PROMPT_MARKER)
         self.busy = False
-
-    def _format_elapsed(self):
-        if self.start_time is None:
-            return "00:00"
-        elapsed = int(time.monotonic() - self.start_time)
-        mm = elapsed // 60
-        ss = elapsed % 60
-        return "{:02d}:{:02d}".format(mm, ss)
 
     def _indicator_tick(self):
         if not self.busy or not self.view.is_valid():
@@ -467,6 +479,21 @@ class ClaudeProxyAppendCommand(sublime_plugin.TextCommand):
     def run(self, edit, text):
         self.view.insert(edit, self.view.size(), text)
         self.view.show(self.view.size())
+
+
+class ClaudeProxyInsertAboveLastPromptCommand(sublime_plugin.TextCommand):
+    def run(self, edit, text):
+        view = self.view
+        if not view.is_valid():
+            return
+        full_text = view.substr(sublime.Region(0, view.size()))
+        needle = "\n" + PROMPT_MARKER
+        idx = full_text.rfind(needle)
+        if idx < 0:
+            if full_text.startswith(PROMPT_MARKER):
+                view.insert(edit, 0, text)
+            return
+        view.insert(edit, idx + 1, text)
 
 
 class ClaudeProxyStartCommand(sublime_plugin.WindowCommand):
